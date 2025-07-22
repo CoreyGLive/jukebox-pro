@@ -1,224 +1,187 @@
 import request from "supertest";
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  test,
-} from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import app from "#app";
 import db from "#db/client";
 
 beforeAll(async () => {
   await db.connect();
+  await db.query("BEGIN");
 });
 afterAll(async () => {
+  await db.query("ROLLBACK");
   await db.end();
 });
 
-describe("/tracks router", () => {
-  const expectedTrack = expect.objectContaining({
-    name: expect.any(String),
-    duration_ms: expect.any(Number),
+describe("POST /users/register", () => {
+  it("sends 400 if request body is invalid", async () => {
+    await db.query("SAVEPOINT s");
+    const response = await request(app).post("/users/register").send({});
+    expect(response.status).toBe(400);
+    await db.query("ROLLBACK TO s");
   });
 
-  test("GET /tracks sends array of at least 20 tracks", async () => {
-    const response = await request(app).get("/tracks");
-    expect(response.status).toBe(200);
-    const tracks = response.body;
-    expect(tracks.length).toBeGreaterThanOrEqual(20);
-    expect(tracks).toEqual(expect.arrayContaining([expectedTrack]));
-  });
-
-  describe("GET /tracks/:id", () => {
-    it("sends track by id", async () => {
-      const response = await request(app).get("/tracks/1");
-      expect(response.status).toBe(200);
-      const track = response.body;
-      expect(track.id).toEqual(1);
-      expect(track).toEqual(expectedTrack);
+  it("creates a new user with a hashed password and sends a token", async () => {
+    const response = await request(app).post("/users/register").send({
+      username: "eFa7xWeIF5A3cpF5JrM1UzsI",
+      password: "password123",
     });
 
-    it("sends 404 if track does not exist", async () => {
-      const response = await request(app).get("/tracks/999999");
-      expect(response.status).toBe(404);
-    });
+    const {
+      rows: [user],
+    } = await db.query(
+      "SELECT * FROM users WHERE username = 'eFa7xWeIF5A3cpF5JrM1UzsI'",
+    );
+    expect(user).toBeDefined();
+    expect(user).toHaveProperty("password");
+    expect(user.password).not.toBe("password123");
 
-    it("sends 400 if id is not a number", async () => {
-      const response = await request(app).get("/tracks/abc");
-      expect(response.status).toBe(400);
-    });
+    expect(response.status).toBe(201);
+    expect(response.text).toMatch(/\w+\.\w+\.\w+/);
   });
 });
 
-describe("/playlists router", () => {
-  const expectedPlaylist = expect.objectContaining({
-    name: expect.any(String),
-    description: expect.any(String),
-  });
+describe("Protected routes", () => {
+  let token;
 
-  test("GET /playlists sends array of at least 10 playlists", async () => {
-    const response = await request(app).get("/playlists");
-    expect(response.status).toBe(200);
-    const playlists = response.body;
-    expect(playlists.length).toBeGreaterThanOrEqual(10);
-    expect(playlists).toEqual(expect.arrayContaining([expectedPlaylist]));
+  const newPlaylist = {
+    name: "My playlist",
+    description: "My description",
+  };
+
+  let newPlaylistUrl;
+
+  describe("POST /users/login", () => {
+    it("sends 400 if request body is invalid", async () => {
+      await db.query("SAVEPOINT s");
+      const response = await request(app).post("/users/login").send({});
+      expect(response.status).toBe(400);
+      await db.query("ROLLBACK TO s");
+    });
+
+    it("sends a token if credentials are valid", async () => {
+      const response = await request(app).post("/users/login").send({
+        username: "eFa7xWeIF5A3cpF5JrM1UzsI",
+        password: "password123",
+      });
+      expect(response.status).toBe(200);
+
+      token = response.text;
+
+      expect(token).toBeDefined();
+      expect(token).toMatch(/\w+\.\w+\.\w+/);
+    });
   });
 
   describe("POST /playlists", () => {
-    beforeEach(async () => {
-      await db.query("BEGIN");
-    });
-    afterEach(async () => {
-      await db.query("ROLLBACK");
+    it("sends 401 if user is not authenticated", async () => {
+      const response = await request(app).post("/playlists").send(newPlaylist);
+      expect(response.status).toBe(401);
     });
 
-    it("creates a new playlist", async () => {
-      const response = await request(app).post("/playlists").send({
-        name: "New Playlist",
-        description: "New Playlist Description",
-      });
+    it("creates a new playlist owned by the user", async () => {
+      const response = await request(app)
+        .post("/playlists")
+        .set("Authorization", `Bearer ${token}`)
+        .send(newPlaylist);
       expect(response.status).toBe(201);
-      const playlist = response.body;
-      expect(playlist).toEqual(expectedPlaylist);
+      expect(response.body).toHaveProperty("id");
+      newPlaylist.id = response.body.id;
+      newPlaylistUrl = `/playlists/${newPlaylist.id}/tracks`;
+    });
+  });
+
+  describe("GET /playlists", () => {
+    it("sends 401 if user is not authenticated", async () => {
+      const response = await request(app).get("/playlists");
+      expect(response.status).toBe(401);
     });
 
-    it("sends 400 if request body is missing", async () => {
-      const response = await request(app).post("/playlists");
-      expect(response.status).toBe(400);
-    });
-
-    it("sends 400 if request body is missing required fields", async () => {
-      const response = await request(app).post("/playlists").send({});
-      expect(response.status).toBe(400);
+    it("sends playlists owned by the user", async () => {
+      const response = await request(app)
+        .get("/playlists")
+        .set("Authorization", `Bearer ${token}`);
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual(
+        expect.arrayContaining([expect.objectContaining(newPlaylist)]),
+      );
     });
   });
 
   describe("GET /playlists/:id", () => {
-    it("sends playlist by id", async () => {
+    it("sends 401 if user is not authenticated", async () => {
       const response = await request(app).get("/playlists/1");
-      expect(response.status).toBe(200);
-      const playlist = response.body;
-      expect(playlist.id).toEqual(1);
-      expect(playlist).toEqual(expectedPlaylist);
+      expect(response.status).toBe(401);
     });
 
-    it("sends 404 if playlist does not exist", async () => {
-      const response = await request(app).get("/playlists/999999");
-      expect(response.status).toBe(404);
-    });
-
-    it("sends 400 if id is not a number", async () => {
-      const response = await request(app).get("/playlists/abc");
-      expect(response.status).toBe(400);
-    });
-  });
-
-  describe("GET /playlists/:id/tracks", () => {
-    it("sends all tracks in the playlist", async () => {
-      const response = await request(app).get("/playlists/1/tracks");
-      expect(response.status).toBe(200);
-      expect(response.body.length).toBeGreaterThanOrEqual(0);
-    });
-
-    it("sends 404 if playlist does not exist", async () => {
-      const response = await request(app).get("/playlists/999999/tracks");
-      expect(response.status).toBe(404);
-    });
-
-    it("sends 400 if id is not a number", async () => {
-      const response = await request(app).get("/playlists/abc/tracks");
-      expect(response.status).toBe(400);
+    it("sends 403 if user does not own the playlist", async () => {
+      const response = await request(app)
+        .get("/playlists/1")
+        .set("Authorization", `Bearer ${token}`);
+      expect(response.status).toBe(403);
     });
   });
 
   describe("POST /playlists/:id/tracks", () => {
-    beforeEach(async () => {
-      await db.query("BEGIN");
-    });
-    afterEach(async () => {
-      await db.query("ROLLBACK");
-    });
-
-    it("sends 400 if request body is missing", async () => {
-      const response = await request(app).post("/playlists/1/tracks");
-      expect(response.status).toBe(400);
+    it("sends 401 if user is not authenticated", async () => {
+      const response = await request(app)
+        .post(newPlaylistUrl)
+        .send({ trackId: 1 });
+      expect(response.status).toBe(401);
     });
 
-    it("sends 400 if request body is missing required fields", async () => {
-      const response = await request(app).post("/playlists/1/tracks").send({});
-      expect(response.status).toBe(400);
-    });
-
-    it("sends 400 if track does not exist", async () => {
+    it("sends 403 if user does not own the playlist", async () => {
       const response = await request(app)
         .post("/playlists/1/tracks")
-        .send({ trackId: 999 });
-      expect(response.status).toBe(400);
+        .send({ trackId: 1 })
+        .set("Authorization", `Bearer ${token}`);
+      expect(response.status).toBe(403);
     });
 
-    it("sends 400 if trackId is not a number", async () => {
-      const response = await request(app).post("/playlists/1/tracks").send({
-        trackId: "abc",
-      });
-      expect(response.status).toBe(400);
+    it("adds a track to the playlist", async () => {
+      const response = await request(app)
+        .post(newPlaylistUrl)
+        .send({ trackId: 1 })
+        .set("Authorization", `Bearer ${token}`);
+      expect(response.status).toBe(201);
+    });
+  });
+
+  describe("GET /playlists/:id/tracks", () => {
+    it("sends 401 if user is not authenticated", async () => {
+      const response = await request(app).get(newPlaylistUrl);
+      expect(response.status).toBe(401);
     });
 
-    it("sends 404 if playlist does not exist", async () => {
-      const response = await request(app).post("/playlists/999/tracks").send({
-        trackId: 1,
-      });
+    it("sends 403 if user does not own the playlist", async () => {
+      const response = await request(app)
+        .get("/playlists/1/tracks")
+        .set("Authorization", `Bearer ${token}`);
+      expect(response.status).toBe(403);
+    });
+  });
+
+  describe("GET /tracks/:id/playlists", () => {
+    it("sends 401 if user is not authenticated", async () => {
+      const response = await request(app).get("/tracks/1/playlists");
+      expect(response.status).toBe(401);
+    });
+
+    it("sends 404 if track does not exist", async () => {
+      const response = await request(app)
+        .get("/tracks/999/playlists")
+        .set("Authorization", `Bearer ${token}`);
       expect(response.status).toBe(404);
     });
 
-    it("sends 400 if playlist id is not a number", async () => {
-      const response = await request(app).post("/playlists/abc/tracks").send({
-        trackId: 1,
-      });
-      expect(response.status).toBe(400);
-    });
-
-    it("creates a new playlist_track", async () => {
-      // Create new playlist to ensure no conflicts
-      const playlist = (
-        await request(app).post("/playlists").send({
-          name: "New Playlist",
-          description: "New Playlist Description",
-        })
-      ).body;
-
+    it("sends playlists owned by the user that contain the track", async () => {
       const response = await request(app)
-        .post(`/playlists/${playlist.id}/tracks`)
-        .send({
-          trackId: 1,
-        });
-      expect(response.status).toBe(201);
+        .get("/tracks/1/playlists")
+        .set("Authorization", `Bearer ${token}`);
+      expect(response.status).toBe(200);
       expect(response.body).toEqual(
-        expect.objectContaining({
-          id: expect.any(Number),
-          playlist_id: playlist.id,
-          track_id: 1,
-        }),
+        expect.arrayContaining([expect.objectContaining(newPlaylist)]),
       );
-    });
-
-    it("sends 400 if track is already in playlist", async () => {
-      // Create new playlist and add track twice to ensure conflict
-      const playlist = (
-        await request(app).post("/playlists").send({
-          name: "New Playlist",
-          description: "New Playlist Description",
-        })
-      ).body;
-
-      const url = `/playlists/${playlist.id}/tracks`;
-      await request(app).post(url).send({ trackId: 1 });
-      const response = await request(app).post(url).send({ trackId: 1 });
-      expect(response.status).toBe(400);
     });
   });
 });

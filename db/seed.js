@@ -7,7 +7,22 @@ console.log("🌱 Database seeded.");
 
 async function seed() {
   // Clear existing data
-  await db.query('TRUNCATE playlists_tracks, playlists, tracks RESTART IDENTITY CASCADE');
+  await db.query('TRUNCATE playlists_tracks, playlists, tracks, users RESTART IDENTITY CASCADE');
+
+  // Seed users
+  const users = [
+    { username: 'alice', password: 'password1' },
+    { username: 'bob', password: 'password2' }
+  ];
+  const userIds = [];
+  for (const user of users) {
+    // In production, hash the password! For seed, store as plain text for now.
+    const result = await db.query(
+      'INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id',
+      [user.username, user.password]
+    );
+    userIds.push(result.rows[0].id);
+  }
 
   // Seed tracks
   const tracks = [
@@ -41,55 +56,27 @@ async function seed() {
     trackIds.push(result.rows[0].id);
   }
 
-  // Seed playlists
+  // Seed playlists (each user gets at least 1 playlist with at least 5 tracks)
   const playlists = [
-    { name: 'Morning Motivation', description: 'Start your day right!' },
-    { name: 'Evening Chill', description: 'Relax after a long day.' },
-    { name: 'Workout Hits', description: 'Pump up your workout.' },
-    { name: 'Study Session', description: 'Focus and get things done.' },
-    { name: 'Party Time', description: 'Get the party started!' },
-    { name: 'Road Trip', description: 'Songs for the open road.' },
-    { name: 'Rainy Days', description: 'Perfect for a rainy afternoon.' },
-    { name: 'Feel Good', description: 'Boost your mood.' },
-    { name: 'Throwback', description: 'Hits from the past.' },
-    { name: 'Sleep Tight', description: 'Wind down for the night.' }
+    { name: 'Alice Playlist', description: 'Alice jams', user_id: userIds[0] },
+    { name: 'Bob Playlist', description: 'Bob jams', user_id: userIds[1] }
   ];
   const playlistIds = [];
   for (const playlist of playlists) {
     const result = await db.query(
-      'INSERT INTO playlists (name, description) VALUES ($1, $2) RETURNING id',
-      [playlist.name, playlist.description]
+      'INSERT INTO playlists (name, description, user_id) VALUES ($1, $2, $3) RETURNING id',
+      [playlist.name, playlist.description, playlist.user_id]
     );
     playlistIds.push(result.rows[0].id);
   }
 
-  // Seed playlists_tracks (at least 15 associations)
-  const associations = [
-    [playlistIds[0], trackIds[0]],
-    [playlistIds[0], trackIds[1]],
-    [playlistIds[1], trackIds[2]],
-    [playlistIds[1], trackIds[3]],
-    [playlistIds[2], trackIds[4]],
-    [playlistIds[2], trackIds[5]],
-    [playlistIds[3], trackIds[6]],
-    [playlistIds[3], trackIds[7]],
-    [playlistIds[4], trackIds[8]],
-    [playlistIds[4], trackIds[9]],
-    [playlistIds[5], trackIds[10]],
-    [playlistIds[5], trackIds[11]],
-    [playlistIds[6], trackIds[12]],
-    [playlistIds[7], trackIds[13]],
-    [playlistIds[8], trackIds[14]],
-    [playlistIds[9], trackIds[15]],
-    [playlistIds[9], trackIds[16]],
-    [playlistIds[8], trackIds[17]],
-    [playlistIds[7], trackIds[18]],
-    [playlistIds[6], trackIds[19]]
-  ];
-  for (const [playlistId, trackId] of associations) {
-    await db.query(
-      'INSERT INTO playlists_tracks (playlist_id, track_id) VALUES ($1, $2)',
-      [playlistId, trackId]
-    );
+  // Seed playlists_tracks (each playlist gets 5 tracks)
+  for (let i = 0; i < playlistIds.length; i++) {
+    for (let j = 0; j < 5; j++) {
+      await db.query(
+        'INSERT INTO playlists_tracks (playlist_id, track_id) VALUES ($1, $2)',
+        [playlistIds[i], trackIds[i * 5 + j]]
+      );
+    }
   }
 }
